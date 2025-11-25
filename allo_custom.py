@@ -533,6 +533,18 @@ def main():
     st.title("Asset Allocation Optimizer")
     st.caption("Current / Gr_MinMax / 기준가 시트를 포함한 엑셀을 업로드하세요.")
 
+    # 예제 파일 다운로드 링크
+    import os
+    example_file_path = "images/example.xlsx"
+    if os.path.exists(example_file_path):
+        with open(example_file_path, "rb") as f:
+            st.download_button(
+                label="📥 예제 엑셀 파일 다운로드",
+                data=f.read(),
+                file_name="example.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
     uploaded = st.file_uploader("엑셀 파일 선택", type=["xlsx", "xls"])
     if uploaded is None:
         st.stop()
