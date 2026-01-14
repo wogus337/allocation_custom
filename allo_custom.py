@@ -4,7 +4,7 @@ import streamlit as st
 from scipy.optimize import minimize
 
 st.set_page_config(
-    page_title="Custom Optimizer",
+    page_title="[글로벌자산배분전략위원회] Allocation",
     layout="wide",
 )
 
@@ -13,47 +13,47 @@ st.markdown("""
     <style>
         /* 사이드바 전체 텍스트 크기 조정 */
         [data-testid="stSidebar"] {
-            font-size: 11px !important;
+            font-size: 14px !important;
         }
 
         /* 사이드바 제목 */
         [data-testid="stSidebar"] h1,
         [data-testid="stSidebar"] h2,
         [data-testid="stSidebar"] h3 {
-            font-size: 13px !important;
+            font-size: 16px !important;
         }
 
         /* 사이드바 본문 텍스트 */
         [data-testid="stSidebar"] p,
         [data-testid="stSidebar"] div,
         [data-testid="stSidebar"] span {
-            font-size: 11px !important;
+            font-size: 14px !important;
         }
 
         /* 사이드바 입력 필드 */
         [data-testid="stSidebar"] input,
         [data-testid="stSidebar"] select,
         [data-testid="stSidebar"] textarea {
-            font-size: 11px !important;
+            font-size: 14px !important;
         }
 
         /* 사이드바 라디오 버튼, 체크박스 */
         [data-testid="stSidebar"] label {
-            font-size: 11px !important;
+            font-size: 14px !important;
         }
 
         /* 사이드바 버튼 */
         [data-testid="stSidebar"] button {
-            font-size: 11px !important;
+            font-size: 14px !important;
         }
 
         /* 사이드바 메트릭 */
         [data-testid="stSidebar"] [data-testid="stMetricValue"] {
-            font-size: 12px !important;
+            font-size: 15px !important;
         }
 
         [data-testid="stSidebar"] [data-testid="stMetricLabel"] {
-            font-size: 10px !important;
+            font-size: 13px !important;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -85,6 +85,7 @@ def load_excel(uploaded_file):
     """Read Excel file."""
     price_df = pd.read_excel(uploaded_file, sheet_name="기준가")
     current_df = pd.read_excel(uploaded_file, sheet_name="Current")
+    asset_minmax_df = pd.read_excel(uploaded_file, sheet_name="Asset_MinMax")
     group_df = pd.read_excel(uploaded_file, sheet_name="Gr_MinMax")
 
     # BM 시트는 선택사항
@@ -94,16 +95,16 @@ def load_excel(uploaded_file):
     except:
         pass
 
-    return price_df, current_df, group_df, bm_df
+    return price_df, current_df, asset_minmax_df, group_df, bm_df
 
 
 def prepare_current_df(df):
     """Clean Current sheet."""
     clean_df = df.copy()
-    for col in ["CURRENT", "MIN", "MAX", "EXPECTED_R", "EXPECTED_V", "YLD"]:
+    for col in ["CURRENT", "MIN", "MAX", "EXPECTED_R", "YLD"]:
         if col in clean_df.columns:
-            if col in ["EXPECTED_R", "EXPECTED_V"]:
-                # EXPECTED_R과 EXPECTED_V는 특별 처리: 5.0 또는 500을 "기대값 없음"으로 인식
+            if col == "EXPECTED_R":
+                # EXPECTED_R은 특별 처리: 5.0 또는 500을 "기대값 없음"으로 인식
                 # 원본 값을 먼저 확인
                 original_values = clean_df[col].copy()
                 clean_df[col] = clean_df[col].apply(normalize_percentage)
@@ -117,13 +118,144 @@ def prepare_current_df(df):
     return clean_df
 
 
-def prepare_group_df(df):
+def prepare_group_df(df, gd_option="GD"):
     """Clean group constraints."""
     group_df = df.copy()
-    for col in ["MIN", "MAX"]:
+    # GD 옵션에 따라 처리할 컬럼 결정
+    if gd_option == "GD":
+        cols_to_normalize = ["Min_GD", "Max_GD"]
+    else:  # GD+
+        cols_to_normalize = ["Min_GDp", "Max_GDp"]
+    
+    for col in cols_to_normalize:
         if col in group_df.columns:
             group_df[col] = group_df[col].apply(normalize_percentage)
     return group_df
+
+
+def merge_asset_data(current_df, asset_minmax_df, group_df, gd_option):
+    """Merge Current, Asset_MinMax, and Gr_MinMax data based on GD option."""
+    # GD 옵션에 따라 컬럼명 결정
+    if gd_option == "GD":
+        asset_min_col = "Min_GD"
+        asset_max_col = "Max_GD"
+        group_min_col = "Min_GD"
+        group_max_col = "Max_GD"
+    else:  # GD+
+        asset_min_col = "Min_GDp"
+        asset_max_col = "Max_GDp"
+        group_min_col = "Min_GDp"
+        group_max_col = "Max_GDp"
+    
+    # Current와 Asset_MinMax 병합 (CODE, NAME을 key로)
+    # Current 시트에 이미 GROUP이 있으므로 Min_GD/Max_GD 또는 Min_GDp/Max_GDp만 가져옴
+    merged_df = current_df.merge(
+        asset_minmax_df[["CODE", "NAME", asset_min_col, asset_max_col]],
+        on=["CODE", "NAME"],
+        how="left"
+    )
+    
+    # Min_GD/Max_GD 또는 Min_GDp/Max_GDp를 Min, Max로 이름 변경
+    merged_df = merged_df.rename(columns={
+        asset_min_col: "MIN",
+        asset_max_col: "MAX"
+    })
+    
+    # GROUP으로 정렬
+    merged_df = merged_df.sort_values("GROUP").reset_index(drop=True)
+    
+    # GROUP을 key로 Gr_MinMax 병합
+    group_merge_cols = ["GROUP", group_min_col, group_max_col]
+    if all(col in group_df.columns for col in group_merge_cols):
+        merged_df = merged_df.merge(
+            group_df[group_merge_cols],
+            on="GROUP",
+            how="left"
+        )
+        # Gr_MinMax 컬럼 이름 변경
+        merged_df = merged_df.rename(columns={
+            group_min_col: "Gr_Min",
+            group_max_col: "Gr_Max"
+        })
+    else:
+        # 컬럼이 없으면 빈 값으로 추가
+        merged_df["Gr_Min"] = np.nan
+        merged_df["Gr_Max"] = np.nan
+    
+    return merged_df
+
+
+def format_percentage_int(value):
+    """Format as integer percentage (no decimals)."""
+    if pd.isna(value):
+        return ""
+    return f"{int(value * 100)}%"
+
+
+def format_percentage_1dec(value):
+    """Format as percentage with 1 decimal."""
+    if pd.isna(value):
+        return ""
+    return f"{value * 100:.1f}%"
+
+
+def format_percentage_2dec(value):
+    """Format as percentage with 2 decimals, or 'X' if value is 5.0."""
+    if pd.isna(value):
+        return ""
+    # 5.0 (500%)인 경우 X로 표시
+    if np.isclose(value, 5.0, atol=0.1):
+        return "X"
+    return f"{value * 100:.2f}%"
+
+
+def format_display_df(df, raw_expected_r=None):
+    """Format dataframe for display with special formatting."""
+    display_df = df.copy()
+    
+    # CODE 컬럼 제거
+    if "CODE" in display_df.columns:
+        display_df = display_df.drop(columns=["CODE"])
+    
+    # CURRENT를 소숫점 첫째자리 퍼센트로 변환
+    if "CURRENT" in display_df.columns:
+        display_df["CURRENT"] = display_df["CURRENT"].apply(format_percentage_1dec)
+    
+    # Min, Max, Gr_Min, Gr_Max를 정수 퍼센트로 변환
+    for col in ["MIN", "MAX", "Gr_Min", "Gr_Max"]:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(format_percentage_int)
+    
+    # YLD를 소숫점 둘째자리 퍼센트로 변환
+    if "YLD" in display_df.columns:
+        display_df["YLD"] = display_df["YLD"].apply(format_percentage_2dec)
+    
+    # EXPECTED_R을 소숫점 둘째자리 퍼센트로 변환 (5.0이면 X)
+    if "EXPECTED_R" in display_df.columns:
+        display_df["EXPECTED_R"] = display_df["EXPECTED_R"].apply(format_percentage_2dec)
+    
+    # Gr_Min, Gr_Max는 각 GROUP의 첫 행에만 표시
+    if "Gr_Min" in display_df.columns and "GROUP" in display_df.columns:
+        if len(display_df) > 0:
+            # 첫 행은 항상 첫 그룹의 첫 행
+            display_df["_is_first_in_group"] = False
+            display_df.loc[0, "_is_first_in_group"] = True
+            # 나머지 행들은 GROUP이 바뀌는 지점
+            if len(display_df) > 1:
+                display_df.loc[1:, "_is_first_in_group"] = display_df.loc[1:, "GROUP"].values != display_df.loc[:len(display_df)-2, "GROUP"].values
+            display_df.loc[~display_df["_is_first_in_group"], "Gr_Min"] = ""
+            display_df.loc[~display_df["_is_first_in_group"], "Gr_Max"] = ""
+            display_df = display_df.drop(columns=["_is_first_in_group"])
+    
+    # 칼럼명 변경
+    column_rename = {
+        "NAME": "Sleeve",
+        "CURRENT": "현재비중",
+        "EXPECTED_R": "기대수익률"
+    }
+    display_df = display_df.rename(columns=column_rename)
+    
+    return display_df
 
 
 def validate_codes(price_df, codes):
@@ -250,51 +382,9 @@ def build_expected_returns(method, current_df, hist_returns, monthly_means, cov_
 
 def build_expected_vols(method, current_df, hist_vols, monthly_means, cov_monthly, sims, raw_expected_v=None,
                         replacement_method=None):
-    excel_vals = current_df.set_index("CODE")["EXPECTED_V"]
-
-    if method == "excel":
-        vols = excel_vals.copy()
-        # 5.0 또는 500%는 기대값이 없다는 의미
-        # 정규화된 값에서 5.0을 체크하거나, 원본 값에서 5.0 또는 500을 체크
-        if raw_expected_v is not None:
-            raw_aligned = raw_expected_v.reindex(excel_vals.index)
-            use_hist = excel_vals.isna() | np.isclose(excel_vals, 5.0, atol=0.1) | (raw_aligned.notna() & (
-                        np.isclose(raw_aligned, 5.0, atol=0.1) | np.isclose(raw_aligned, 500.0, atol=1.0)))
-        else:
-            use_hist = excel_vals.isna() | np.isclose(excel_vals, 5.0, atol=0.1)
-        if use_hist.any():
-            # 사용자가 선택한 대체 방식으로 값 대체
-            if replacement_method == "monte_carlo":
-                # 몬테칼로 시뮬레이션으로 변동성 계산
-                np.random.seed(42)
-                cov = cov_monthly.values + np.eye(len(cov_monthly)) * 1e-8
-                try:
-                    sims_res = np.random.multivariate_normal(monthly_means.values, cov, size=sims)
-                    mc_vols = np.std(sims_res, axis=0)
-                    ann_mc_vols = pd.Series(mc_vols * np.sqrt(12), index=monthly_means.index)
-                    mc_vol_values = ann_mc_vols.reindex(excel_vals.index)
-                    vols.loc[use_hist] = mc_vol_values.loc[use_hist.index]
-                except np.linalg.LinAlgError:
-                    # 공분산 행렬 오류 시 과거변동성으로 대체
-                    vols.loc[use_hist] = hist_vols.loc[use_hist.index]
-            else:
-                # 과거변동성으로 대체 (default)
-                vols.loc[use_hist] = hist_vols.loc[use_hist.index]
-    elif method == "historical":
-        vols = hist_vols.copy()
-    else:  # monte_carlo
-        # 몬테칼로 시뮬레이션으로 변동성 계산
-        np.random.seed(42)
-        cov = cov_monthly.values + np.eye(len(cov_monthly)) * 1e-8
-        try:
-            sims_res = np.random.multivariate_normal(monthly_means.values, cov, size=sims)
-            mc_vols = np.std(sims_res, axis=0)
-            ann_mc_vols = pd.Series(mc_vols * np.sqrt(12), index=monthly_means.index)
-            vols = ann_mc_vols.reindex(excel_vals.index)
-        except np.linalg.LinAlgError:
-            vols = hist_vols.copy()
-
-    return vols.reindex(hist_vols.index).fillna(hist_vols)
+    """Build expected volatilities. Always uses historical volatility since EXPECTED_V is not used."""
+    # EXPECTED_V는 사용하지 않으므로 항상 과거 변동성 사용
+    return hist_vols.copy()
 
 
 def risk_parity_objective(w, cov):
@@ -410,10 +500,16 @@ def optimize_portfolio(
     eq_weights = np.ones(n_assets) / n_assets
 
     constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
-    constraints.append({"type": "ineq", "fun": lambda w: np.dot(w, dur_array) - dur_limits[0]})
-    constraints.append({"type": "ineq", "fun": lambda w: dur_limits[1] - np.dot(w, dur_array)})
-    constraints.append({"type": "ineq", "fun": lambda w: np.dot(w, yld_array) - yld_limits[0]})
-    constraints.append({"type": "ineq", "fun": lambda w: yld_limits[1] - np.dot(w, yld_array)})
+    
+    # 듀레이션 절대값 제약조건 (BM이 없는 경우에만 사용)
+    if dur_limits is not None:
+        constraints.append({"type": "ineq", "fun": lambda w: np.dot(w, dur_array) - dur_limits[0]})
+        constraints.append({"type": "ineq", "fun": lambda w: dur_limits[1] - np.dot(w, dur_array)})
+    
+    # YLD 절대값 제약조건은 사용하지 않음
+    # if yld_limits is not None:
+    #     constraints.append({"type": "ineq", "fun": lambda w: np.dot(w, yld_array) - yld_limits[0]})
+    #     constraints.append({"type": "ineq", "fun": lambda w: yld_limits[1] - np.dot(w, yld_array)})
 
     # BM 대비 차이 제약조건
     if bm_dur is not None and dur_diff_limits is not None:
@@ -531,7 +627,7 @@ def format_ratio(value):
 
 def main():
     st.title("Asset Allocation Optimizer")
-    st.caption("Current / Gr_MinMax / 기준가 시트를 포함한 엑셀을 업로드하세요.")
+    st.caption("Current / Asset_MinMax / Gr_MinMax / 기준가 / BM 시트를 포함한 엑셀을 업로드하세요.")
 
     # 예제 파일 다운로드 링크
     import os
@@ -550,7 +646,7 @@ def main():
         st.stop()
 
     try:
-        price_df, current_df_raw, group_df, bm_df = load_excel(uploaded)
+        price_df, current_df_raw, asset_minmax_df, group_df, bm_df = load_excel(uploaded)
     except Exception as exc:
         st.error(f"엑셀 파일을 읽는 중 오류가 발생했습니다: {exc}")
         st.stop()
@@ -570,6 +666,13 @@ def main():
 
     has_bm = (use_bm == "사용")
 
+    # GD/GD+ 선택
+    gd_option = st.sidebar.radio(
+        "GD or GD+",
+        ("GD", "GD+"),
+        index=0,
+    )
+
     # BM 사용 시 BM 시트 검증
     if has_bm:
         if bm_df is None:
@@ -586,11 +689,12 @@ def main():
     # normalize_percentage 적용 전 원본 값 확인 (5.0 또는 500% 체크용)
     raw_expected_r = current_df_raw.set_index("CODE")[
         "EXPECTED_R"] if "EXPECTED_R" in current_df_raw.columns else pd.Series()
-    raw_expected_v = current_df_raw.set_index("CODE")[
-        "EXPECTED_V"] if "EXPECTED_V" in current_df_raw.columns else pd.Series()
 
     current_df = prepare_current_df(current_df_raw)
-    group_df = prepare_group_df(group_df)
+    group_df_prepared = prepare_group_df(group_df, gd_option)
+    
+    # 데이터 병합 (GD 옵션에 따라)
+    current_df = merge_asset_data(current_df, asset_minmax_df, group_df_prepared, gd_option)
 
     codes = current_df["CODE"].astype(str).tolist()
     try:
@@ -600,7 +704,7 @@ def main():
         st.stop()
 
     reference_months = st.sidebar.number_input("참조기간 (개월)", min_value=12, max_value=120, value=36, step=3)
-    turnover_limit = st.sidebar.number_input("회전율 제약 (%)", min_value=0.0, max_value=200.0, value=30.0, step=5.0) / 100
+    turnover_limit = st.sidebar.number_input("회전율 제약 (%)", min_value=0.0, max_value=200.0, value=100.0, step=5.0) / 100
     risk_free_rate = st.sidebar.number_input("무위험수익률 (%)", value=0.0, step=0.1) / 100
     mar = st.sidebar.number_input("Sortino 최소수익률 (%)", value=0.0, step=0.25) / 100
     mc_sims = st.sidebar.number_input("몬테칼로 시뮬레이션 횟수", min_value=100, max_value=5000, value=1000, step=100)
@@ -614,16 +718,85 @@ def main():
     replacement_method = None
     if expected_method == "excel":
         replacement_method = st.sidebar.radio(
-            "엑셀입력 시 대체 방식 (기대값이 없는 자산용)",
+            "기대수익률 없을 경우 대체 방법",
             ("historical", "monte_carlo"),
             index=0,  # default: 과거수익률
             format_func=lambda x: {"historical": "과거수익률", "monte_carlo": "몬테칼로"}[x],
         )
 
     st.subheader("현재 자산 정보")
-    current_df_display = current_df[
-        ["CODE", "NAME", "CURRENT", "MIN", "MAX", "DUR", "YLD", "EXPECTED_R", "EXPECTED_V", "GROUP"]
-    ].copy()
+    # 표시용 컬럼 선택 (CODE 제외)
+    display_cols = ["NAME", "CURRENT", "MIN", "MAX"]
+    if "DUR" in current_df.columns:
+        display_cols.append("DUR")
+    if "YLD" in current_df.columns:
+        display_cols.append("YLD")
+    if "EXPECTED_R" in current_df.columns:
+        display_cols.append("EXPECTED_R")
+    if "GROUP" in current_df.columns:
+        display_cols.append("GROUP")
+    if "Gr_Min" in current_df.columns:
+        display_cols.append("Gr_Min")
+    if "Gr_Max" in current_df.columns:
+        display_cols.append("Gr_Max")
+    
+    current_df_display = current_df[display_cols].copy()
+    current_df_display = format_display_df(current_df_display, raw_expected_r)
+    
+    # 스타일링: NAME(Sleeve)를 제외한 나머지 칼럼은 오른쪽 정렬 + 1칸 들여쓰기
+    def style_dataframe(df):
+        styles = []
+        for col in df.columns:
+            if col != "Sleeve":
+                styles.append({
+                    'selector': f'th.col_{col}',
+                    'props': [('text-align', 'right'), ('padding-right', '1em')]
+                })
+                styles.append({
+                    'selector': f'td.col_{col}',
+                    'props': [('text-align', 'right'), ('padding-right', '1em')]
+                })
+        return styles
+    
+    # Streamlit dataframe에 스타일 적용
+    st.markdown("""
+    <style>
+        /* 모든 테이블 셀에 대해 Sleeve 칼럼을 제외하고 오른쪽 정렬 */
+        div[data-testid="stDataFrame"] table thead tr th:not(:first-child),
+        div[data-testid="stDataFrame"] table tbody tr td:not(:first-child),
+        div[data-testid="stDataFrame"] table th:not(:first-child),
+        div[data-testid="stDataFrame"] table td:not(:first-child) {
+            text-align: right !important;
+            padding-right: 1em !important;
+        }
+        /* 더 구체적인 선택자로 확실하게 적용 */
+        div[data-testid="stDataFrame"] table th[data-testid*="columnHeader"]:not(:first-child),
+        div[data-testid="stDataFrame"] table td:not(:first-child) {
+            text-align: right !important;
+            padding-right: 1em !important;
+        }
+        /* 모든 가능한 테이블 구조에 대해 적용 */
+        div[data-testid="stDataFrame"] table tr th:nth-child(n+2),
+        div[data-testid="stDataFrame"] table tr td:nth-child(n+2) {
+            text-align: right !important;
+            padding-right: 1em !important;
+        }
+        /* 테이블 스크롤 제거 - 모든 행이 한번에 보이도록 */
+        div[data-testid="stDataFrame"] > div {
+            max-height: none !important;
+            overflow: visible !important;
+        }
+        div[data-testid="stDataFrame"] > div > div {
+            max-height: none !important;
+            overflow: visible !important;
+        }
+        div[data-testid="stDataFrame"] {
+            max-height: none !important;
+            overflow: visible !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
     st.dataframe(current_df_display, use_container_width=True, hide_index=True)
 
     try:
@@ -661,27 +834,21 @@ def main():
             st.error("BM 시트에서 DUR 또는 YLD 값을 읽을 수 없습니다.")
             st.stop()
 
-    # 엑셀에서 기대수익률과 기대변동성 값 확인
+    # 엑셀에서 기대수익률 값 확인
     # 엑셀에서 % 형식으로 500% 입력 시 pandas가 5.0으로 읽을 수 있으므로, 원본 값과 정규화된 값 모두 체크
-    excel_expected_r = current_df.set_index("CODE")["EXPECTED_R"]
-    excel_expected_v = current_df.set_index("CODE")["EXPECTED_V"]
+    excel_expected_r = current_df.set_index("CODE")["EXPECTED_R"] if "EXPECTED_R" in current_df.columns else pd.Series(dtype=float, index=current_df.set_index("CODE").index)
+    
     # 원본 값에서 5.0 또는 500을 체크, 또는 정규화된 값에서 5.0을 체크
     # (엑셀에서 일반 형식으로 500 입력 → normalize_percentage에서 500/100 = 5.0)
     # (엑셀에서 % 형식으로 500% 입력 → pandas가 5.0으로 읽음 → normalize_percentage에서 5.0/100 = 0.05)
     raw_r_aligned = raw_expected_r.reindex(excel_expected_r.index) if len(raw_expected_r) > 0 else pd.Series(
         index=excel_expected_r.index)
-    raw_v_aligned = raw_expected_v.reindex(excel_expected_v.index) if len(raw_expected_v) > 0 else pd.Series(
-        index=excel_expected_v.index)
     missing_r = excel_expected_r.isna() | np.isclose(excel_expected_r, 5.0, atol=0.1) | (raw_r_aligned.notna() & (
                 np.isclose(raw_r_aligned, 5.0, atol=0.1) | np.isclose(raw_r_aligned, 500.0, atol=1.0)))
-    missing_v = excel_expected_v.isna() | np.isclose(excel_expected_v, 5.0, atol=0.1) | (raw_v_aligned.notna() & (
-                np.isclose(raw_v_aligned, 5.0, atol=0.1) | np.isclose(raw_v_aligned, 500.0, atol=1.0)))
-    missing_any = missing_r | missing_v
-    missing_all = missing_r & missing_v
 
-    # 모든 자산이 기대값이 없고 엑셀입력을 선택한 경우
-    if expected_method == "excel" and missing_all.all():
-        st.error("모든 자산의 기대수익률과 기대변동성이 없습니다. 엑셀입력 방식을 사용할 수 없습니다. 과거수익률 또는 몬테칼로 방식을 선택해주세요.")
+    # 모든 자산이 기대수익률이 없고 엑셀입력을 선택한 경우
+    if expected_method == "excel" and missing_r.all():
+        st.error("모든 자산의 기대수익률이 없습니다. 엑셀입력 방식을 사용할 수 없습니다. 과거수익률 또는 몬테칼로 방식을 선택해주세요.")
         st.stop()
 
     expected_returns = build_expected_returns(
@@ -701,22 +868,22 @@ def main():
         returns_df.mean(),
         cov_monthly,
         mc_sims,
-        raw_expected_v=raw_expected_v if len(raw_expected_v) > 0 else None,
+        raw_expected_v=None,
         replacement_method=replacement_method,
     )
 
     # 메시지 처리
-    if expected_method == "excel" and missing_any.any():
-        # 일부 자산만 기대값이 없는 경우
-        missing_codes = current_df.loc[missing_any.values, "NAME"].tolist()
+    if expected_method == "excel" and missing_r.any():
+        # 일부 자산만 기대수익률이 없는 경우
+        missing_codes = current_df.loc[missing_r.values, "NAME"].tolist()
         missing_names = ", ".join(missing_codes)
         method_name = "과거수익률" if replacement_method == "historical" else "몬테칼로"
         st.warning(
-            f"{missing_names} 자산은 기대수익률과 기대변동성 중 최소 하나가 입력되지 않았습니다. 그래서 사이드바에서 선택한 방식({method_name})으로 값을 대체합합니다.")
-    elif expected_method in ["historical", "monte_carlo"] and missing_all.all():
-        # 모든 자산이 기대값이 없고 과거수익률/몬테칼로를 선택한 경우
+            f"{missing_names} 자산은 기대수익률이 입력되지 않았습니다. 그래서 사이드바에서 선택한 방식({method_name})으로 값을 대체합니다.")
+    elif expected_method in ["historical", "monte_carlo"] and missing_r.all():
+        # 모든 자산이 기대수익률이 없고 과거수익률/몬테칼로를 선택한 경우
         method_name = "과거수익률" if expected_method == "historical" else "몬테칼로"
-        st.info(f"모든 자산의 기대수익률과 기대변동성이 없어 선택한 방식({method_name})으로 값을 대체합합니다.")
+        st.info(f"모든 자산의 기대수익률이 없어 선택한 방식({method_name})으로 값을 대체합니다.")
 
     # BM 정보 표시
     st.subheader("벤치마크 (BM) 정보")
@@ -771,26 +938,25 @@ def main():
     st.sidebar.markdown("### 제약조건 설정")
 
     if has_bm:
-        # BM 대비 차이 제약조건
+        # BM 대비 차이 제약조건만 사용
         st.sidebar.markdown("#### BM 대비 차이 제약")
         dur_diff_min = st.sidebar.number_input("BM 대비 DUR 차이 최소", value=-1.0, step=0.1)
         dur_diff_max = st.sidebar.number_input("BM 대비 DUR 차이 최대", value=1.0, step=0.1)
         yld_diff_min = st.sidebar.number_input("BM 대비 YLD 차이 최소 (%)", value=-0.5, step=0.1) / 100
         yld_diff_max = st.sidebar.number_input("BM 대비 YLD 차이 최대 (%)", value=0.5, step=0.1) / 100
-        # 절대 DUR, YLD 제약도 유지
-        dur_min = st.sidebar.number_input("듀레이션 최소", value=float(np.round(current_duration * 0.9, 2)))
-        dur_max = st.sidebar.number_input("듀레이션 최대", value=float(np.round(current_duration * 1.1, 2)))
-        yld_min = st.sidebar.number_input("YLD 최소 (%)", value=float(np.round(current_yield * 100 * 0.9, 2))) / 100
-        yld_max = st.sidebar.number_input("YLD 최대 (%)", value=float(np.round(current_yield * 100 * 1.1, 2))) / 100
+        # BM이 있는 경우 절대 제약은 사용하지 않음
+        dur_min = None
+        dur_max = None
     else:
         dur_diff_min = None
         dur_diff_max = None
         yld_diff_min = None
         yld_diff_max = None
-        dur_min = st.sidebar.number_input("듀레이션 최소", value=float(np.round(current_duration * 0.9, 2)))
-        dur_max = st.sidebar.number_input("듀레이션 최대", value=float(np.round(current_duration * 1.1, 2)))
-        yld_min = st.sidebar.number_input("YLD 최소 (%)", value=float(np.round(current_yield * 100 * 0.9, 2))) / 100
-        yld_max = st.sidebar.number_input("YLD 최대 (%)", value=float(np.round(current_yield * 100 * 1.1, 2))) / 100
+        dur_min_pct = st.sidebar.number_input("듀레이션 최소 (%)", value=-20.0, step=1.0, help="현재 듀레이션 대비 하한 비율")
+        dur_max_pct = st.sidebar.number_input("듀레이션 최대 (%)", value=20.0, step=1.0, help="현재 듀레이션 대비 상한 비율")
+        dur_min = current_duration * (1 + dur_min_pct / 100)
+        dur_max = current_duration * (1 + dur_max_pct / 100)
+        st.sidebar.caption(f"듀레이션 범위: {dur_min:.2f} ~ {dur_max:.2f}")
 
     bounds = list(
         zip(
@@ -799,10 +965,27 @@ def main():
         )
     )
 
-    group_limits = {
-        row["GROUP"]: (row.get("MIN", 0) if not pd.isna(row.get("MIN", 0)) else 0, row.get("MAX", 1))
-        for _, row in group_df.iterrows()
-    }
+    # 병합된 데이터에서 GROUP별 Gr_Min, Gr_Max를 사용하여 group_limits 생성
+    group_limits = {}
+    if "GROUP" in current_df.columns and "Gr_Min" in current_df.columns and "Gr_Max" in current_df.columns:
+        # 각 GROUP의 첫 행에서 Gr_Min, Gr_Max를 가져옴
+        for group in current_df["GROUP"].unique():
+            if pd.isna(group):
+                continue
+            group_rows = current_df[current_df["GROUP"] == group]
+            if len(group_rows) > 0:
+                gr_min = group_rows.iloc[0]["Gr_Min"]
+                gr_max = group_rows.iloc[0]["Gr_Max"]
+                # NaN이면 기본값 사용
+                gr_min = gr_min if not pd.isna(gr_min) else 0
+                gr_max = gr_max if not pd.isna(gr_max) else 1
+                group_limits[group] = (gr_min, gr_max)
+    else:
+        # Gr_Min, Gr_Max가 없으면 기본값 사용
+        for group in current_df["GROUP"].unique() if "GROUP" in current_df.columns else []:
+            if pd.isna(group):
+                continue
+            group_limits[group] = (0, 1)
     group_map = {}
     for idx, row in current_df.reset_index().iterrows():
         group = row.get("GROUP")
@@ -823,6 +1006,18 @@ def main():
     if has_bm:
         objectives.append("Max IR")
 
+    # session_state 초기화
+    if "optimization_results" not in st.session_state:
+        st.session_state.optimization_results = None
+    if "optimization_objectives" not in st.session_state:
+        st.session_state.optimization_objectives = None
+    if "optimization_current_df" not in st.session_state:
+        st.session_state.optimization_current_df = None
+    if "optimization_current_weights" not in st.session_state:
+        st.session_state.optimization_current_weights = None
+    if "optimization_current_stats" not in st.session_state:
+        st.session_state.optimization_current_stats = None
+
     if st.button("최적화 실행"):
         progress_placeholder = st.empty()
         progress_placeholder.info("최적화 진행 중...")
@@ -839,8 +1034,8 @@ def main():
                 group_limits,
                 dur_array,
                 yld_array,
-                (dur_min, dur_max),
-                (yld_min, yld_max),
+                (dur_min, dur_max) if dur_min is not None else None,  # BM이 있는 경우 None
+                None,  # YLD 절대값 제약조건 사용 안함
                 turnover_limit,
                 returns_df,
                 mar,
@@ -868,6 +1063,82 @@ def main():
         # 최적화 완료 후 진행 메시지 제거
         progress_placeholder.empty()
 
+        # 결과를 session_state에 저장
+        st.session_state.optimization_results = results
+        st.session_state.optimization_objectives = objectives
+        st.session_state.optimization_current_df = current_df
+        st.session_state.optimization_current_weights = current_weights
+        st.session_state.optimization_current_stats = current_stats
+
+    # 저장된 결과가 있으면 표시
+    if st.session_state.optimization_results is not None:
+        results = st.session_state.optimization_results
+        objectives = st.session_state.optimization_objectives
+        current_df = st.session_state.optimization_current_df
+        current_weights = st.session_state.optimization_current_weights
+        current_stats = st.session_state.optimization_current_stats
+
+        # 엑셀 내보내기 함수
+        def create_excel_file():
+            import io
+            try:
+                from openpyxl import Workbook
+                from openpyxl.utils.dataframe import dataframe_to_rows
+                
+                excel_buffer = io.BytesIO()
+                wb = Workbook()
+                wb.remove(wb.active)  # 기본 시트 제거
+                
+                # 기본 테이블 구조 (모든 자산 포함)
+                base_table = current_df[["NAME"]].copy()
+                
+                # 각 최적화 목표별로 시트 생성 (모든 행 포함)
+                for obj in objectives:
+                    opt = results[obj]["weights"]
+                    table_export = base_table.copy()
+                    table_export["Current Weight"] = [format_percentage(w) for w in current_weights]
+                    table_export["Optimized Weight"] = [format_percentage(w) for w in opt]
+                    table_export["Diff"] = [format_percentage(w) for w in (opt - current_weights)]
+                    
+                    # 시트 이름 생성 (최대 31자)
+                    sheet_name = obj[:31] if len(obj) > 31 else obj
+                    ws = wb.create_sheet(title=sheet_name)
+                    
+                    # 데이터프레임을 시트에 추가
+                    for r in dataframe_to_rows(table_export, index=False, header=True):
+                        ws.append(r)
+                
+                # 방법론별 optimized weight만 있는 시트 생성 (Current Weight 포함)
+                summary_table = base_table.copy()
+                summary_table["Current Weight"] = [format_percentage(w) for w in current_weights]
+                for obj in objectives:
+                    opt = results[obj]["weights"]
+                    # 시트 이름을 컬럼명으로 사용 (최대 31자)
+                    col_name = obj[:31] if len(obj) > 31 else obj
+                    summary_table[col_name] = [format_percentage(w) for w in opt]
+                
+                ws_summary = wb.create_sheet(title="Summary", index=0)  # 첫 번째 시트로
+                for r in dataframe_to_rows(summary_table, index=False, header=True):
+                    ws_summary.append(r)
+                
+                wb.save(excel_buffer)
+                excel_buffer.seek(0)
+                return excel_buffer.getvalue()
+            except ImportError:
+                return None
+        
+        # 엑셀 파일 생성 및 다운로드 버튼 표시
+        excel_data = create_excel_file()
+        if excel_data:
+            st.download_button(
+                label="📥 최적화 결과 엑셀 다운로드",
+                data=excel_data,
+                file_name="optimization_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("엑셀 내보내기를 위해 openpyxl 패키지가 필요합니다. pip install openpyxl로 설치해주세요.")
+
         tabs = st.tabs(objectives)
         for tab, obj in zip(tabs, objectives):
             with tab:
@@ -875,7 +1146,8 @@ def main():
                 stats = results[obj]["stats"]
                 turnover = results[obj]["turnover"]
 
-                table = current_df[["CODE", "NAME"]].copy()
+                table = current_df[["NAME"]].copy()
+                table = table.rename(columns={"NAME": "Sleeve"})
                 table["Current Weight"] = [format_percentage(w) for w in current_weights]
                 table["Optimized Weight"] = [format_percentage(w) for w in opt]
                 table["Diff"] = [format_percentage(w) for w in opt - current_weights]
