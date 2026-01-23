@@ -631,7 +631,7 @@ def main():
 
     # 예제 파일 다운로드 링크
     import os
-    example_file_path = "images/example.xlsx"
+    example_file_path = "images/Streamlit_Upload.xlsx"
     if os.path.exists(example_file_path):
         with open(example_file_path, "rb") as f:
             st.download_button(
@@ -1185,5 +1185,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
